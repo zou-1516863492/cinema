@@ -180,6 +180,7 @@ void dataInit(void)
     _mkdir(DATA_DIR);           /* 已存在会返回 -1，不用管 */
     getToday(g_today);
     loadUsers();
+    securePasswords();          /* 明文密码统一升级为哈希，只做一次 */
     loadCinema();
     loadTickets();
 
@@ -232,7 +233,7 @@ void inputStr(char* buf, int size)
         if (len >= size)                        /* 注意：中文一个字占 3 字节 */
         {
             printf("  太长了（上限 %d 字节，约 %d 个汉字），请重新输入：",
-                size - 1, (size - 1) / 3);
+                size - 1, (size - 1) / 2);   /* GBK 下一个汉字占 2 字节 */
             continue;
         }
         strcpy(buf, tmp);

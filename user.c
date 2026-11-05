@@ -1,16 +1,167 @@
 
-/*==================================================================
-  user.c  ——  用户注册 / 登录 / 观众菜单
-  ------------------------------------------------------------------
-  负责人：B
-  说明：
-    1) 本文件只放"账号相关"和"观众菜单"。
-    2) 场次列表（showOnSale / pickSchedule）是 A 写在 schedule.c 里的，
-       B 直接调用，不要在本文件里再实现一遍，否则 LNK2005 重复定义。
-    3) 每个功能函数内部自己 pauseScreen()，观众菜单不再重复暂停，
-       否则每点一次要按两下回车。
-==================================================================*/
 #include "cinema.h"
+
+/*==================================================================
+  密码存储：不存明文，存"加盐哈希"
+  ─────────────────────────────────────────────────────────────
+  做法：把密码和用户编号混在一起，算 1024 轮 FNV-1a，得到一个
+        64 位散列，再转成 16 个十六进制字符，前面加 '$' 标记
+        "这一格存的是哈希，不是原密码"。
+        最终 pwd 字段里长这样：  $a3f19c7e2b04d185
+
+  为什么这么做：
+    ① 不可逆  —— 从 $a3f1... 反推不出原密码，数据文件被人看到也没用
+    ② 加盐    —— 混入了用户编号，两个人用同一个密码，存下来的值也
+                 不同，别人没法靠"值相同"推断出"密码相同"
+    ③ 迭代    —— 算 1024 轮，登录只多花几微秒，暴力枚举却慢 1024 倍
+
+  为什么不用 MD5 / SHA：
+    课设环境没有 OpenSSL，自己实现要一百多行。哈希"不可逆"靠的是单向
+    函数这个性质，FNV-1a 虽然不是密码学哈希，但配上加盐和迭代，对本
+    项目够用。真实系统应该用 bcrypt / scrypt / Argon2 这类专门为"存密码"
+    设计的算法 —— 它们本身就是慢的，正是为了让暴力破解变慢。
+==================================================================*/
+
+/*------------------------------------------------------------------
+  把密码 + 用户编号 揉成一个 64 位散列
+------------------------------------------------------------------*/
+static unsigned long long pwdHash(const char* pwd, int uid)
+{
+    unsigned long long h;
+    const unsigned char* p;
+    int round;
+
+    /* 初始值掺入用户编号：这就是"盐"，
+       换个用户，整条计算链的起点就不一样 */
+    h = 14695981039346656037ULL ^ ((unsigned long long)uid * 2654435761ULL);
+
+    /* 迭代 1024 轮：每轮都把密码重新揉一遍，
+       想让破解慢 1024 倍，代价只是登录时多算几微秒 */
+    for (round = 0; round < 1024; round++)
+    {
+        p = (const unsigned char*)pwd;
+        while (*p)
+        {
+            h ^= (unsigned long long)(*p++);
+            h *= 1099511628211ULL;              /* FNV-1a 的质数 */
+        }
+        h ^= (unsigned long long)round;         /* 让每轮的中间值都不同 */
+    }
+    return h;
+}
+
+/*------------------------------------------------------------------
+  散列 → "$" + 16 位十六进制，写进 out（至少 20 字节）
+------------------------------------------------------------------*/
+static void hashPassword(const char* pwd, int uid, char* out)
+{
+    static const char* HEX = "0123456789abcdef";
+    unsigned long long h = pwdHash(pwd, uid);
+    int i;
+
+    out[0] = '$';                               /* 标记：这格存的是哈希 */
+    for (i = 0; i < 16; i++)
+    {
+        out[16 - i] = HEX[h & 0xF];
+        h >>= 4;
+    }
+    out[17] = '\0';
+}
+
+/*------------------------------------------------------------------
+  校验：把这次输入的密码用同样方式算一遍，和存下来的比
+  返回：1 一致，0 不一致
+------------------------------------------------------------------*/
+static int checkPassword(const char* input, const char* stored, int uid)
+{
+    char tmp[20];
+
+    /* 存量如果是旧格式（明文，没有 '$' 开头），说明迁移没跑到，
+       这里做一次兜底：直接按明文比，避免用户彻底登不进去 */
+    if (stored[0] != '$')
+    {
+        return strcmp(input, stored) == 0;
+    }
+
+    hashPassword(input, uid, tmp);
+    return strcmp(tmp, stored) == 0;
+}
+
+/*------------------------------------------------------------------
+  把历史遗留的明文密码，统一升级成哈希（启动时跑一次）
+  判断依据：pwd 第一位是不是 '$'。是 → 已经是哈希，跳过。
+  升级完立刻存盘，下次启动就没什么可做的了。
+------------------------------------------------------------------*/
+void securePasswords(void)
+{
+    int  i, cnt = 0;
+    char tmp[20];
+
+    for (i = 0; i < g_userCnt; i++)
+    {
+        if (g_users[i].pwd[0] == '$') continue;      /* 已经是哈希 */
+
+        hashPassword(g_users[i].pwd, g_users[i].id, tmp);
+        strcpy(g_users[i].pwd, tmp);
+        cnt++;
+    }
+
+    if (cnt > 0)
+    {
+        saveUsers();
+        printf("已把 %d 个账号的明文密码升级为哈希存储。\n", cnt);
+    }
+}
+
+/*------------------------------------------------------------------
+  密码强度校验：必须同时包含 字母 + 数字 + 符号
+  ─────────────────────────────────────────────────────────────
+  规则：
+    ① 只能用英文字母、数字和半角符号（0x21 ~ 0x7E）
+       空格、中文、全角符号一律不收 —— 它们在登录框里最容易输错
+    ② 字母、数字、符号 三类各至少出现一次
+    ③ 任何位置都不许出现 '$'
+       '$' 是 pwd 字段里"这格存的是哈希"的标记，
+       密码里带它会和标记撞车，导致这个账号永远登不进去
+
+  参数：reason 用于回填失败原因（调用方要给够 64 字节）
+  返回：1 合格，0 不合格
+------------------------------------------------------------------*/
+int checkPwdStrength(const char* pwd, char* reason)
+{
+    int i;
+    int hasAlpha = 0, hasDigit = 0, hasSymbol = 0;
+
+    for (i = 0; pwd[i] != '\0'; i++)
+    {
+        unsigned char c = (unsigned char)pwd[i];
+
+        if (c == '$')
+        {
+            strcpy(reason, "密码里不能出现 $ 符号");
+            return 0;
+        }
+        if (c < 0x21 || c > 0x7E)      /* 空格、中文、全角字符都进不来 */
+        {
+            strcpy(reason, "密码只能用英文字母、数字和半角符号");
+            return 0;
+        }
+
+        if (c >= '0' && c <= '9')
+            hasDigit = 1;                                  /* 数字 */
+        else if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))
+            hasAlpha = 1;                                  /* 字母 */
+        else
+            hasSymbol = 1;                                 /* 其余可见字符算符号 */
+    }
+
+    if (!hasAlpha || !hasDigit || !hasSymbol)
+    {
+        strcpy(reason, "密码必须同时包含 字母 + 数字 + 符号");
+        return 0;
+    }
+    return 1;
+}
 
 /*-------------------- 1. 用户注册 --------------------*/
 /* 返回：1 注册成功；0 已满 / 重名 / 两次密码不一致 */
@@ -19,6 +170,7 @@ int registerUser(void)
     char uname[20];
     char pwd1[20];
     char pwd2[20];
+    char reason[64];
     int  i;
 
     system("cls");
@@ -33,7 +185,7 @@ int registerUser(void)
     }
 
     /* ② 用户名：inputStr 已保证非空且不超长 */
-    printf("请输入用户名（最多 6 个汉字）：");
+    printf("请输入用户名（最多 9 个汉字）：");
     inputStr(uname, sizeof(uname));
 
     /* ③ 查重：把已有账号全扫一遍 */
@@ -48,7 +200,7 @@ int registerUser(void)
     }
 
     /* ④ 密码输两遍，防手抖 */
-    printf("请设置密码：");
+    printf("请设置密码（字母+数字+符号，不能含 $）：");
     inputStr(pwd1, sizeof(pwd1));
     printf("请再输一次密码：");
     inputStr(pwd2, sizeof(pwd2));
@@ -60,14 +212,22 @@ int registerUser(void)
         return 0;
     }
 
+    /* 密码强度：字母 + 数字 + 符号，三类各至少一个；
+       具体是哪一类不满足，由 checkPwdStrength 写进 reason 里 */
+    if (!checkPwdStrength(pwd1, reason))
+    {
+        printf("\n%s，注册失败。\n", reason);
+        pauseScreen();
+        return 0;
+    }
+
     /* ⑤ 写入内存：id 由 newUserId() 算，永远不会重复 */
     g_users[g_userCnt].id = newUserId();
     strcpy(g_users[g_userCnt].name, uname);
-    strcpy(g_users[g_userCnt].pwd, pwd1);
+    /* 密码不存明文：算成加盐哈希再存进去 */
+    hashPassword(pwd1, g_users[g_userCnt].id, g_users[g_userCnt].pwd);
     g_userCnt++;
 
-    /* ⑥ 改完立刻存盘。别攒到退出时统一保存，
-          中途关窗口或崩溃，这个账号就白注册了。 */
     saveUsers();
 
     printf("\n注册成功！你的用户编号是 %d，现在可以登录了。\n",
@@ -99,8 +259,12 @@ int loginUser(char *name, int *uid)
 
     for (i = 0; i < g_userCnt; i++)
     {
-        if (strcmp(g_users[i].name, uname) == 0 &&
-            strcmp(g_users[i].pwd, pwd)  == 0)
+        if (strcmp(g_users[i].name, uname) != 0) continue;
+
+        /* 用户名对上了，再用同样的算法把这次输入的密码算一遍，
+           和存下来的哈希比。注意 uid 必须传进去 —— 它参与了加盐，
+           传错值就会算出另一个哈希，正确密码也登不进 */
+        if (checkPassword(pwd, g_users[i].pwd, g_users[i].id))
         {
             strncpy(name, g_users[i].name, 19);   /* 目标只有 20 字节，别溢出 */
             name[19] = '\0';
@@ -110,10 +274,9 @@ int loginUser(char *name, int *uid)
             pauseScreen();
             return 1;
         }
+        break;              /* 用户名唯一，名字对了密码不对就不用再找 */
     }
 
-    /* 失败只给一句话，不区分"没这个用户"还是"密码错"，
-       否则别人可以拿它试探哪些账号存在 */
     printf("\n用户名或密码错误。\n");
     pauseScreen();
     return 0;
@@ -149,12 +312,14 @@ void userMenu(int uid, const char *name)
         {
         case 1:                                  /* A 写在 schedule.c */
             showOnSale();
+            pauseScreen();
             break;
 
         case 2:                                  /* 先选场次，再看座位 */
             sIdx = pickSchedule();               /* 取消返回 -1 */
             if (sIdx >= 0)
                 showSeats(sIdx);
+            pauseScreen();
             break;
 
         case 3:

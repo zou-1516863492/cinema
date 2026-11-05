@@ -91,14 +91,16 @@ void showMovies(void)
         return;
     }
 
-    printf("\n编号\t名称\t\t票价\t时长\n");
+    printf("\n%-6s %-20s %10s %10s\n", "编号", "名称", "票价", "时长(分)");
+
 
     for (i = 0; i < g_movieCnt; i++) {
-        printf("%d\t%-16s\t%.2f\t%d 分钟\n",
+        printf("%-6d %-20s %10.2f %10d\n",
             g_movies[i].id,
             g_movies[i].name,
             g_movies[i].price,
             g_movies[i].minutes);
+
     }
     pauseScreen();
 }

@@ -126,6 +126,8 @@ void sortBoxOffice(void);
 /*==================== 七、观众端（B）====================*/
 int  registerUser(void);
 int  loginUser(char* name, int* uid);
+void securePasswords(void);        /* 启动时把明文密码升级成哈希，只做一次 */
+int  checkPwdStrength(const char* pwd, char* reason);   /* 密码强度：字母+数字+符号 */
 void userMenu(int uid, const char* name);
 
 void showOnSale(void);

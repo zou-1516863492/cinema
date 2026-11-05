@@ -46,8 +46,8 @@ int buyTicket(int uid)
     }
 
     /* ④ 看座位图，顺便判断有没有空位 */
-    showSeats(&g_scheds[sIdx]);
-    left = countLeft(&g_scheds[sIdx]);
+    showSeats(sIdx);
+    left = countLeft(sIdx);
     if (left <= 0) {
         printf("\n  这一场已经满座了。\n");
         pauseScreen();
@@ -75,7 +75,7 @@ int buyTicket(int uid)
     r--;  c--;          /* 用户从 1 数起，数组从 0 数起 */
 
     /* ⑥ 占座：seatSell 负责改 seat 数组和 soldCnt，返回 0 代表被人抢先了 */
-    if (!seatSell(&g_scheds[sIdx], r, c)) {
+    if (!seatSell(sIdx, r, c)) {
         printf("\n  这个座位刚刚被别人买走了，请重新选。\n");
         pauseScreen();
         return 0;
@@ -165,7 +165,7 @@ int refundTicket(int uid)
     /* ③ 反查场次，把座位放回去，票房减掉 */
     sIdx = findSchedule(t->schedId);
     if (sIdx >= 0) {
-        seatFree(&g_scheds[sIdx], t->row, t->col);
+        seatFree(sIdx, t->row, t->col);
         if (g_scheds[sIdx].income >= t->price)
             g_scheds[sIdx].income -= t->price;
         else

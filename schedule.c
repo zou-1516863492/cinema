@@ -214,8 +214,9 @@ void showSchedules(void)
         printf("暂无场次，请先排片。\n");
         return;
     }
+    printf("\n%-6s %-20s %-6s %-12s %-8s %8s %-6s\n",
+        "场次号", "电影", "影厅", "日期", "时间", "票价", "余票");
 
-    printf("\n场次号\t电影\t\t影厅\t日期\t\t时间\t票价\t余票\n");
 
     for (i = 0; i < g_schedCnt; i++) {
         movieIndex = findMovie(g_scheds[i].movieId);
@@ -224,7 +225,7 @@ void showSchedules(void)
             left = 0;
         }
 
-        printf("%d\t%-16s\t%d\t%s\t%s\t%.2f\t%d\n",
+        printf("%-6d %-20s %-6d %-12s %-8s %8.2f %-6d\n",
             g_scheds[i].id,
             (movieIndex == -1 ? "未知电影" : g_movies[movieIndex].name),
             g_scheds[i].hallId,
@@ -276,7 +277,8 @@ void showOnSale(void)
     }
 
     printf("\n===== 正在售卖的场次 =====\n");
-    printf("场次号\t电影\t\t影厅\t日期\t\t时间\t票价\t余票\n");
+    printf("%-6s %-20s %-6s %-12s %-8s %8s %-6s\n",
+        "场次号", "电影", "影厅", "日期", "时间", "票价", "余票");
 
     for (i = 0; i < g_schedCnt; i++) {
         /* 只显示今天及以后的场次，过去的场次不卖 */
@@ -291,7 +293,7 @@ void showOnSale(void)
 
         movieIndex = findMovie(g_scheds[i].movieId);
 
-        printf("%d\t%-16s\t%d\t%s\t%s\t%.2f\t%d\n",
+        printf("%-6d %-20s %-6d %-12s %-8s %8.2f %-6d\n",
             g_scheds[i].id,
             (movieIndex == -1 ? "未知电影" : g_movies[movieIndex].name),
             g_scheds[i].hallId,
