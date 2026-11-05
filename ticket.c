@@ -133,6 +133,12 @@ int buyTicket(int uid)
     t->price = g_scheds[sIdx].price;
     t->hallId = g_scheds[sIdx].hallId;      /* 影厅号也存一份快照 */
     getNowTime(t->buyTime);                 /* 下单时间，票面上要显示 */
+
+    /* 购票人也存快照：以后用户在"账号设置"里改了昵称，
+       这张票上仍然是下单当时那个名字，账目才对得上 */
+    strncpy(t->buyerName, userNameById(uid), 19);
+    t->buyerName[19] = '\0';
+
     t->state = 1;
     g_ticketCnt++;
 
@@ -150,6 +156,7 @@ int buyTicket(int uid)
     printf("   影厅：%d 号厅\n", t->hallId);
     printf("   座位：%d 排 %d 座\n", r + 1, c + 1);
     printf("   金额：%.2f 元\n", t->price);
+    printf("   购票人：%s\n", t->buyerName);
     printf("   购票：%s\n", t->buyTime);
     printf("  --------------------------------------------\n");
     pauseScreen();
@@ -382,9 +389,15 @@ void showMyTickets(int uid)
             : (t->state == 3 ? "已改签" : "已退")));
 
         if (t->buyTime[0] != '\0')
-            printf("        购票时间：%s\n", t->buyTime);
+            printf("        购票时间：%s", t->buyTime);
         else
-            printf("        购票时间：（旧订单，没有记录）\n");
+            printf("        购票时间：（旧订单，没有记录）");
+
+        /* 购票人是下单时的快照：用户改过名，这里仍显示当时那个名字 */
+        if (t->buyerName[0] != '\0')
+            printf("    购票人：%s\n", t->buyerName);
+        else
+            printf("    购票人：（旧订单，未记录）\n");
 
         if (t->state == 1 || t->state == 4)     /* 改签票也是有效票，能进场 */
         {
@@ -636,6 +649,14 @@ int changeTicket(int uid)
     nt.price = newPrice;
     nt.hallId = g_scheds[newIdx].hallId;
     getNowTime(nt.buyTime);
+
+    /* 购票人跟着老票走：改签只是换场次，不换人；
+       万一老票是没记名字的旧数据，才补当前的用户名 */
+    if (t->buyerName[0] != '\0')
+        strncpy(nt.buyerName, t->buyerName, 19);
+    else
+        strncpy(nt.buyerName, userNameById(uid), 19);
+    nt.buyerName[19] = '\0';
     nt.state = 4;            /* 4 = 改签来的票：有效、能进场，但不能再退改 */
 
     g_tickets[g_ticketCnt] = nt;

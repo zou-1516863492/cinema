@@ -167,10 +167,27 @@ typedef struct
     int   state;
 } TicketV1;                 /* 旧版订单：96 字节/条，没有影厅号和下单时间 */
 
+typedef struct
+{
+    int   id;
+    int   userId;
+    int   schedId;
+    char  movieName[50];
+    char  date[11];
+    int   slot;
+    int   hallId;
+    int   row;
+    int   col;
+    float price;
+    char  buyTime[20];
+    int   state;
+} TicketV2;                 /* 上一版订单：120 字节/条，还没有购票人快照 */
+
 void loadTickets(void)
 {
     FILE*    fp;
     TicketV1 old;
+    TicketV2 old2;
     int      n = 0, i, si;
     long     fileSize;
 
@@ -198,6 +215,40 @@ void loadTickets(void)
         if (n > 0)
             g_ticketCnt = (int)fread(g_tickets, sizeof(Ticket), (size_t)n, fp);
     }
+    else if (fileSize == (long)sizeof(int) + (long)n * (long)sizeof(TicketV2))
+    {
+        /* 上一版格式：只差一个购票人。逐条搬，名字按账号当前名字回填一次，
+           回填进去就成了快照，以后改名不会再动它 */
+        for (i = 0; i < n; i++)
+        {
+            if (fread(&old2, sizeof(TicketV2), 1, fp) != 1) break;
+
+            memset(&g_tickets[i], 0, sizeof(Ticket));
+            g_tickets[i].id     = old2.id;
+            g_tickets[i].userId = old2.userId;
+            g_tickets[i].schedId = old2.schedId;
+            strncpy(g_tickets[i].movieName, old2.movieName, 49);
+            g_tickets[i].movieName[49] = '\0';
+            strncpy(g_tickets[i].date, old2.date, 10);
+            g_tickets[i].date[10] = '\0';
+            g_tickets[i].slot   = old2.slot;
+            g_tickets[i].hallId = old2.hallId;
+            g_tickets[i].row    = old2.row;
+            g_tickets[i].col    = old2.col;
+            g_tickets[i].price  = old2.price;
+            strncpy(g_tickets[i].buyTime, old2.buyTime, 19);
+            g_tickets[i].buyTime[19] = '\0';
+            g_tickets[i].state  = old2.state;
+            strncpy(g_tickets[i].buyerName, userNameById(old2.userId), 19);
+        }
+        g_ticketCnt = i;
+        fclose(fp);
+
+        printf("订单文件是上一版格式，已升级：%d 条记录补上购票人（按当前用户名回填）。\n",
+            g_ticketCnt);
+        saveTickets();
+        return;
+    }
     else if (fileSize == (long)sizeof(int) + (long)n * (long)sizeof(TicketV1))
     {
         /* 旧格式：逐条搬进新结构。影厅号反查场次补上，下单时间留空 */
@@ -222,11 +273,12 @@ void loadTickets(void)
 
             si = findSchedule(old.schedId);
             g_tickets[i].hallId = (si >= 0) ? g_scheds[si].hallId : 0;
+            strncpy(g_tickets[i].buyerName, userNameById(old.userId), 19);
         }
         g_ticketCnt = i;
         fclose(fp);
 
-        printf("订单文件是旧格式，已升级：%d 条记录补上影厅号，下单时间留空。\n",
+        printf("订单文件是旧格式，已升级：%d 条记录补上影厅号和购票人，下单时间留空。\n",
             g_ticketCnt);
         saveTickets();                    /* 立刻写成新格式，下次不用再迁 */
         return;
@@ -282,6 +334,23 @@ void dataInit(void)
 /* 全项目禁止直接用 scanf：
      1) 输入字母会死循环刷屏；
      2) 会往缓冲区留下 '\n'，害得后面的 pauseScreen 被跳过。 */
+
+/*------------------------------------------------------------------
+  按用户编号查名字。找不到返回空串 —— 调用方必须容忍空串。
+  用途只有两个：
+    ① 迁移老订单时把购票人回填一次
+    ② 显示"当前登录是谁"
+  绝不能拿它去覆盖订单里已经存好的 buyerName，那正好把快照给毁了
+------------------------------------------------------------------*/
+const char* userNameById(int uid)
+{
+    int i;
+    for (i = 0; i < g_userCnt; i++)
+    {
+        if (g_users[i].id == uid) return g_users[i].name;
+    }
+    return "";
+}
 
 int inputInt(int lo, int hi)
 {

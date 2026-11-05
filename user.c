@@ -282,10 +282,137 @@ int loginUser(char *name, int *uid)
     return 0;
 }
 
-/*-------------------- 3. 观众菜单 --------------------*/
+/*-------------------- 3. 账号设置 --------------------*/
+/* 改昵称、改密码。
+   name 传的是 main 里那个 uname 数组（20 字节），改名后要就地写回去，
+   否则退回菜单还顶着旧名字。
+   ─────────────────────────────────────────────────────────────
+   关于"改名之后老票上是谁的名字"：
+     订单里的 buyerName 是下单那一刻抄进去的快照，和影片名、影厅号一样，
+     只认当时的值。这样改完名，历史订单照样能看出"这张票是谁买的"，
+     账不会因为改名而错乱。新买的票才写新名字。
+------------------------------------------------------------------*/
+void userProfile(int uid, char *name)
+{
+    int  i, op, idx = -1;
+    char buf[20], oldPwd[20], pwd1[20], pwd2[20], reason[64];
+
+    /* 先定位账号在数组里的下标：登录进来的一定找得到，
+       找不到说明数据被外部改过，直接退回去，不做任何写入 */
+    for (i = 0; i < g_userCnt; i++)
+    {
+        if (g_users[i].id == uid) { idx = i; break; }
+    }
+    if (idx < 0)
+    {
+        printf("\n  账号信息异常，请重新登录。\n");
+        pauseScreen();
+        return;
+    }
+
+    while (1)
+    {
+        system("cls");
+        printf("================= 账号设置 =================\n");
+        printf("  当前昵称：%s\n", g_users[idx].name);
+        printf("  用户编号：%d\n", g_users[idx].id);
+        printf("----------------------------------------------\n");
+        printf("   1. 修改昵称\n");
+        printf("   2. 修改密码\n");
+        printf("   0. 返回\n");
+        printf("----------------------------------------------\n");
+        printf("请选择 [0-2]：");
+        op = inputInt(0, 2);
+
+        if (op == 0) return;
+
+        /* ---------- 改昵称 ---------- */
+        if (op == 1)
+        {
+            printf("\n  新昵称（1~9 个汉字）：");
+            inputStr(buf, sizeof(buf));
+
+            if (strcmp(buf, g_users[idx].name) == 0)
+            {
+                printf("\n  和现在的昵称一样，没有改动。\n");
+                pauseScreen();
+                continue;
+            }
+
+            /* 用户名是登录凭据，必须唯一，所以要和别人比一遍（跳过自己） */
+            for (i = 0; i < g_userCnt; i++)
+            {
+                if (i != idx && strcmp(g_users[i].name, buf) == 0) break;
+            }
+            if (i < g_userCnt)
+            {
+                printf("\n  昵称「%s」已经有人用了，换一个吧。\n", buf);
+                pauseScreen();
+                continue;
+            }
+
+            strcpy(g_users[idx].name, buf);
+            strcpy(name, buf);              /* 菜单标题要立刻跟着变 */
+            saveUsers();
+
+            printf("\n  昵称已改为「%s」。\n", buf);
+            printf("  说明：已经出过的票上仍记着原来的名字，\n");
+            printf("        订单是下单那一刻的凭证，不随改名变动。\n");
+            pauseScreen();
+        }
+
+        /* ---------- 改密码 ---------- */
+        else if (op == 2)
+        {
+            printf("\n  请输入原密码：");
+            inputPassword(oldPwd, sizeof(oldPwd));
+
+            if (!checkPassword(oldPwd, g_users[idx].pwd, g_users[idx].id))
+            {
+                printf("\n  原密码不正确，密码没有改动。\n");
+                pauseScreen();
+                continue;
+            }
+
+            printf("  新密码（字母+数字+符号，不能含 $）：");
+            inputPassword(pwd1, sizeof(pwd1));
+            printf("  再输一次新密码：");
+            inputPassword(pwd2, sizeof(pwd2));
+
+            if (strcmp(pwd1, pwd2) != 0)
+            {
+                printf("\n  两次输入的新密码不一致，密码没有改动。\n");
+                pauseScreen();
+                continue;
+            }
+            if (strcmp(pwd1, oldPwd) == 0)
+            {
+                printf("\n  新密码和原密码相同，等于没改。\n");
+                pauseScreen();
+                continue;
+            }
+            if (!checkPwdStrength(pwd1, reason))
+            {
+                printf("\n  %s，密码没有改动。\n", reason);
+                pauseScreen();
+                continue;
+            }
+
+            /* 存哈希，不存明文：和注册走同一个函数，
+               保证登录时算出来的值能对上 */
+            hashPassword(pwd1, g_users[idx].id, g_users[idx].pwd);
+            saveUsers();
+
+            printf("\n  密码已更新，下次登录请用新密码。\n");
+            pauseScreen();
+        }
+    }
+}
+
+/*-------------------- 4. 观众菜单 --------------------*/
 /* uid：当前用户编号（购票/退票/查记录都要用）
    name：当前用户名（只用于显示） */
-void userMenu(int uid, const char *name)
+void userMenu(int uid, char *name)
 {
     int op;
     int sIdx;
@@ -301,10 +428,11 @@ void userMenu(int uid, const char *name)
         printf("   3. 退票\n");
         printf("   4. 我的购票记录\n");
         printf("   5. 改签\n");
+        printf("   6. 账号设置\n");
         printf("   0. 返回主菜单\n");
         printf("----------------------------------------------\n");
-        printf("请选择 [0-5]：");
-        op = inputInt(0, 5);
+        printf("请选择 [0-6]：");
+        op = inputInt(0, 6);
 
         if (op == 0) return;
 
@@ -338,6 +466,10 @@ void userMenu(int uid, const char *name)
 
         case 5:
             changeTicket(uid);                   /* 写在 ticket.c */
+            break;
+
+        case 6:
+            userProfile(uid, name);              /* 改名/改密码，name 就地更新 */
             break;
         }
 

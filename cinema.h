@@ -76,7 +76,10 @@ typedef struct
     int   col;
     float price;
     char  buyTime[20];      /* 下单时间 "2026-11-05 08:20:14" */
-    int   state;            /* 1=有效 2=已退 3=已改签 */
+    int   state;            /* 1=有效 2=已退 3=已改签 4=改签票 */
+    char  buyerName[20];    /* 购票人快照：用户以后改名，这张票上不会跟着变。
+                               放在最后是为了让前 120 字节和老格式完全一样，
+                               迁移时整块照搬即可 */
 } Ticket;
 
 /*==================== 三、全局数据 ====================*/
@@ -109,6 +112,7 @@ extern int g_colorOn;         /* 1=终端支持 ANSI 颜色，0=退回纯字符 */
 extern int g_cellW;           /* 一个方块字符实测占几列：宋体 2，Consolas 1 */
 void initConsoleColor(void);  /* 探测颜色能力；不支持就返回，界面自动用纯字符 */
 
+const char* userNameById(int uid);   /* 按编号查用户名，找不到返回空串 */
 const char* slotTime(int slot);
 int  isStarted(int sIdx);            /* 这场开演了吗？开场后不能退票、不能改签 */
 long minutesToStart(int sIdx);       /* 距开演还有多少分钟，负数=已开场 */
@@ -142,7 +146,8 @@ int  registerUser(void);
 int  loginUser(char* name, int* uid);
 void securePasswords(void);        /* 启动时把明文密码升级成哈希，只做一次 */
 int  checkPwdStrength(const char* pwd, char* reason);   /* 密码强度：字母+数字+符号 */
-void userMenu(int uid, const char* name);
+void userMenu(int uid, char* name);
+void userProfile(int uid, char* name);   /* 改昵称 / 改密码，name 会被就地更新 */
 
 void showOnSale(void);
 int  pickSchedule(void);
