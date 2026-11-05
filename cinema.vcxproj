@@ -126,7 +126,7 @@
     <ClCompile Include="admin.c" />
     <ClCompile Include="movie.c" />
     <ClCompile Include="main.c" />
-    <ClCompile Include="cinema.h" />
+    <ClInclude Include="cinema.h" />
     <ClCompile Include="schedule.c" />
     <ClCompile Include="seat.c" />
     <ClCompile Include="statistics.c" />

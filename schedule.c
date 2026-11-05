@@ -106,7 +106,6 @@ int addSchedule(void)
     int dayOffset;               /* 0~6 */
     int i;                       /* 循环变量 */
     char date[11];               /* 日期字符串 */
-    char priceBuf[20];           /* 自定义票价输入 */
     float customPrice;           /* 解析后的票价 */
 
     /* 1. 容量检查 */
@@ -209,13 +208,18 @@ void showSchedules(void)
     int i;
     int movieIndex;
     int left;
+    char tag[32];
+    const char* cRed = g_colorOn ? "\x1b[1;31m" : "";
+    const char* cYel = g_colorOn ? "\x1b[1;33m" : "";
+    const char* cGrn = g_colorOn ? "\x1b[1;32m" : "";
+    const char* cEnd = g_colorOn ? "\x1b[0m"    : "";
 
     if (g_schedCnt == 0) {
         printf("暂无场次，请先排片。\n");
         return;
     }
-    printf("\n%-6s %-20s %-6s %-12s %-8s %8s %-6s\n",
-        "场次号", "电影", "影厅", "日期", "时间", "票价", "余票");
+    printf("\n%-6s %-20s %-6s %-12s %-8s %8s %-6s %s\n",
+        "场次号", "电影", "影厅", "日期", "时间", "票价", "余票", "状态");
 
 
     for (i = 0; i < g_schedCnt; i++) {
@@ -225,14 +229,22 @@ void showSchedules(void)
             left = 0;
         }
 
-        printf("%-6d %-20s %-6d %-12s %-8s %8.2f %-6d\n",
+        /* 状态判定和退票判断共用 isStarted，不再单独写一套时间比较 */
+        if (isStarted(i))
+            sprintf(tag, "%s已开演%s", cRed, cEnd);
+        else if (left == 0)
+            sprintf(tag, "%s售罄%s", cYel, cEnd);
+        else
+            sprintf(tag, "%s待映%s", cGrn, cEnd);
+
+        printf("%-6d %-20s %-6d %-12s %-8s %8.2f %-6d %s\n",
             g_scheds[i].id,
             (movieIndex == -1 ? "未知电影" : g_movies[movieIndex].name),
             g_scheds[i].hallId,
             g_scheds[i].date,
             slotTime(g_scheds[i].slot),
             g_scheds[i].price,
-            left);
+            left, tag);
     }
     pauseScreen();
 
@@ -270,6 +282,10 @@ void showOnSale(void)
     int movieIndex;
     int left;
     int found = 0;
+    char tag[32];
+    const char* cYel = g_colorOn ? "\x1b[1;33m" : "";
+    const char* cGrn = g_colorOn ? "\x1b[1;32m" : "";
+    const char* cEnd = g_colorOn ? "\x1b[0m"    : "";
 
     if (g_schedCnt == 0) {
         printf("暂无场次。\n");
@@ -277,12 +293,17 @@ void showOnSale(void)
     }
 
     printf("\n===== 正在售卖的场次 =====\n");
-    printf("%-6s %-20s %-6s %-12s %-8s %8s %-6s\n",
-        "场次号", "电影", "影厅", "日期", "时间", "票价", "余票");
+    printf("%-6s %-20s %-6s %-12s %-8s %8s %-6s %s\n",
+        "场次号", "电影", "影厅", "日期", "时间", "票价", "余票", "状态");
 
     for (i = 0; i < g_schedCnt; i++) {
         /* 只显示今天及以后的场次，过去的场次不卖 */
         if (strcmp(g_scheds[i].date, g_today) < 0) {
+            continue;
+        }
+
+        /* 今天的场次还得看时点：10:00 的场，下午再来就不该还挂着卖 */
+        if (isStarted(i)) {
             continue;
         }
 
@@ -293,14 +314,20 @@ void showOnSale(void)
 
         movieIndex = findMovie(g_scheds[i].movieId);
 
-        printf("%-6d %-20s %-6d %-12s %-8s %8.2f %-6d\n",
+        /* 2 小时内开演给个提醒，观众好判断来不来得及 */
+        if (minutesToStart(i) <= 2 * 60)
+            sprintf(tag, "%s即将开演%s", cYel, cEnd);
+        else
+            sprintf(tag, "%s售票中%s", cGrn, cEnd);
+
+        printf("%-6d %-20s %-6d %-12s %-8s %8.2f %-6d %s\n",
             g_scheds[i].id,
             (movieIndex == -1 ? "未知电影" : g_movies[movieIndex].name),
             g_scheds[i].hallId,
             g_scheds[i].date,
             slotTime(g_scheds[i].slot),
             g_scheds[i].price,
-            left);
+            left, tag);
 
         found = 1;
     }
@@ -325,7 +352,7 @@ int pickSchedule(void)
 
     showOnSale();
 
-    printf("请输入场次编号（输入 0 取消）：");
+    printf("  请输入场次编号查看座位图（输入 0 取消）：");
     id = inputInt(0, 1000000);
 
     if (id == 0) {
@@ -338,9 +365,11 @@ int pickSchedule(void)
         return -1;
     }
 
-    /* 再检查一次：日期不能是过去，余票不能为 0 */
-    if (strcmp(g_scheds[index].date, g_today) < 0) {
-        printf("该场次已经过期。\n");
+    /* 再检查一次：开场了、余票为 0 都不能选。
+       以前只比日期，今天 10:00 的场下午还能买，买完立刻退又被
+       "已开场"挡住，等于付了钱退不掉。所以这里改成比开场时刻。 */
+    if (isStarted(index)) {
+        printf("该场次已经开场，不能再买票。\n");
         return -1;
     }
 

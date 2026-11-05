@@ -5,10 +5,30 @@
 ==================================================================*/
 #include "cinema.h"
 
+/* 一个座位格：方块字符 + 1 个空格。
+   方块本身占几列由 g_cellW 决定（启动时实测），所以格子总宽 = g_cellW + 1，
+   表头用同样的宽度格式，数字就一定落在方块正上方，换字体也不会错。 */
+static void seatCell(int sold)
+{
+    int i, pad = 3 - g_cellW;              /* 方块自身 g_cellW 列，补足到 3 列 */
+
+    if (pad < 1) pad = 1;
+    if (g_colorOn) printf(sold ? "\x1b[1;31m" : "\x1b[1;32m");
+    printf("%s", sold ? "■" : "□");
+    if (g_colorOn) printf("\x1b[0m");
+    for (i = 0; i < pad; i++) putchar(' ');
+}
+
 void showSeats(int sIdx)
 {
     char mname[50];
-    int  r, c, k;
+    int  r, c, k, i, sold, left, fill, pct;
+    const char* cTitle = g_colorOn ? "\x1b[1;36m" : "";
+    const char* cFilm  = g_colorOn ? "\x1b[1;33m" : "";
+    const char* cRow   = g_colorOn ? "\x1b[36m"    : "";
+    const char* cFill  = g_colorOn ? "\x1b[1;32m"  : "";
+    const char* cBlank = g_colorOn ? "\x1b[90m"    : "";
+    const char* cEnd   = g_colorOn ? "\x1b[0m"     : "";
 
     if (sIdx < 0 || sIdx >= g_schedCnt)
     {
@@ -23,24 +43,37 @@ void showSeats(int sIdx)
             strcpy(mname, g_movies[k].name); break;
         }
 
-    printf("\n  《%s》  %s  %s（第%d场）  %d号厅  票价 %.2f 元\n",
-        mname, g_scheds[sIdx].date, slotTime(g_scheds[sIdx].slot),
+    left = countLeft(sIdx);
+    sold = SEAT_TOTAL - left;
+    pct  = sold * 100 / SEAT_TOTAL;
+    fill = sold * 20 / SEAT_TOTAL;
+    if (sold > 0 && fill == 0) fill = 1;          /* 有票就至少亮一格 */
+
+    printf("\n  %s=============  银  幕  =============%s\n\n", cTitle, cEnd);
+    printf("  %s《%s》%s  %s  %s（第%d场）  %d号厅  票价 %.2f 元\n",
+        cFilm, mname, cEnd, g_scheds[sIdx].date, slotTime(g_scheds[sIdx].slot),
         g_scheds[sIdx].slot, g_scheds[sIdx].hallId, g_scheds[sIdx].price);
 
-    printf("      ");                                    /* 与下面排号对齐 */
-    for (c = 1; c <= COL_COUNT; c++) printf("%-2d ", c);
+    printf("      ");                                     /* 6 列，与排号前缀等宽 */
+    for (c = 1; c <= COL_COUNT; c++) printf("%-2d ", c);   /* 每格固定 3 列 */
     printf("\n");
 
     for (r = 0; r < ROW_COUNT; r++)
     {
-        printf("  %s   ", rowName(r));
+        printf("  %s%s%s   ", cRow, rowName(r), cEnd);      /* 2+1+3 = 6 列 */
         for (c = 0; c < COL_COUNT; c++)
-            printf("%s", g_scheds[sIdx].seat[r][c] == 0 ? "□ " : "■ ");
+            seatCell(g_scheds[sIdx].seat[r][c] != 0);
         printf("\n");
     }
 
-    printf("\n  图例：□ 空位   ■ 已售      余票 %d / %d\n",
-        countLeft(sIdx), SEAT_TOTAL);
+    printf("\n  ");
+    seatCell(0); printf(" 空位      ");
+    seatCell(1); printf(" 已售\n");
+
+    printf("  上座 [");
+    for (i = 0; i < 20; i++)
+        printf("%s%c%s", i < fill ? cFill : cBlank, i < fill ? '#' : '-', cEnd);
+    printf("]  %d%%   余票 %d / %d\n", pct, left, SEAT_TOTAL);
 }
 
 /* 数还剩多少个空座 */

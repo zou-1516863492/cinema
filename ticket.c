@@ -6,6 +6,37 @@
 #include <string.h>
 
 /*------------------------------------------------------------------
+  退改手续费
+    left     = 距开演还有多少分钟（minutesToStart 的返回值）
+    isChange = 0 退票，1 改签
+  ------------------------------------------------------------------
+  分档照线上票务平台的做法：越临近开演越贵，因为座位来不及再卖。
+      24 小时以上      免费
+      6 ~ 24 小时      2 元
+      2 ~ 6 小时       5 元
+      2 小时以内       10 元
+  改签一律是退票的一半 —— 用户人还在、只是换个场次，影院没丢这笔钱。
+  但改签票不能再退（见 refundTicket），否则"先改签到远处再免费退"
+  就能把阶梯整个绕过去。
+  已开场的由调用方拦住，这里不重复判断。
+------------------------------------------------------------------*/
+float calcFee(long left, int isChange)
+{
+    float fee;
+
+    if (left > 24 * 60)      fee = 0.0f;
+    else if (left > 6 * 60)  fee = 2.0f;
+    else if (left > 2 * 60)  fee = 5.0f;
+    else                     fee = 10.0f;
+
+    /* 半价后四舍五入到元：0->0, 2->1, 5->3, 10->5 */
+    if (isChange)
+        fee = (float)(int)(fee * 0.5f + 0.5f);
+
+    return fee;
+}
+
+/*------------------------------------------------------------------
   1. 购票
   成功返回 1，取消或失败返回 0
 ------------------------------------------------------------------*/
@@ -34,7 +65,7 @@ int buyTicket(int uid)
     for (i = 0; i < g_ticketCnt; i++) {
         if (g_tickets[i].userId == uid &&
             g_tickets[i].schedId == g_scheds[sIdx].id &&
-            g_tickets[i].state == 1) {
+            (g_tickets[i].state == 1 || g_tickets[i].state == 4)) {
             used++;
         }
     }
@@ -56,7 +87,7 @@ int buyTicket(int uid)
     printf("\n  剩余空座：%d 个，请挑一个。\n", left);
 
     /* ⑤ 输入排号座号，-1 放弃 */
-    printf("  排号 1 ~ %d（输入 -1 放弃购票）：", ROW_COUNT);
+    printf("  排号 1 ~ %d（图上 A ~ J，输入 -1 放弃购票）：", ROW_COUNT);
     r = inputInt(-1, ROW_COUNT);
     if (r < 0) {
         printf("\n  已取消购票。\n");
@@ -64,7 +95,7 @@ int buyTicket(int uid)
         return 0;
     }
 
-    printf("  座号 1 ~ %d（输入 -1 放弃购票）：", COL_COUNT);
+    printf("  座号 1 ~ %d（图上从左往右数，输入 -1 放弃购票）：", COL_COUNT);
     c = inputInt(-1, COL_COUNT);
     if (c < 0) {
         printf("\n  已取消购票。\n");
@@ -126,34 +157,87 @@ int buyTicket(int uid)
 }
 
 /*------------------------------------------------------------------
+  档位文字：把 left 翻成"免费/扣2元/..."，列表的说明列用
+  和 calcFee 共用同一组边界，改档位只改这两处
+------------------------------------------------------------------*/
+static const char* feeTag(long left)
+{
+    if (left > 24 * 60) return "免费";
+    if (left > 6 * 60)  return "扣2元";
+    if (left > 2 * 60)  return "扣5元";
+    return "扣10元";
+}
+
+/*------------------------------------------------------------------
   2. 退票
   成功返回 1，取消或失败返回 0
 ------------------------------------------------------------------*/
 int refundTicket(int uid)
 {
-    int  i, tid, real = -1, sIdx, n = 0;
-    char hall[16];
+    int   i, tid, real = -1, sIdx, n = 0, pass, started;
+    long  left = 0;
+    float fee = 0.0f, back = 0.0f;
+    char  when[20], seatBuf[16], nameBuf[20];
+    const char* cFee;
+    const char* cEnd = g_colorOn ? "\x1b[0m" : "";
     Ticket* t;
 
-    /* ① 列有效票，前面的数字就是票号本身，不再重数序号 */
+    /* 列表里每张票当时算出的手续费，确认时拿来比：跨档了要明说。
+       static 是因为 2500 个 float 放栈上太大；每次调用先清成 -1。 */
+    static float feeShown[MAX_TICKETS];
+
+    /* ① 列有效票：能退的排前面，退不了的沉底。
+          手续费不存盘，每次重画都按"现在"重算 —— 同一张票隔一天再打开，
+          数字会自己往上涨，这正是阶梯收费要的效果。
+          列宽：2+4+2+16+2+11+2+8+2+6+2+6+2+7+2+6 = 78 列，80 列控制台不折行 */
+    for (i = 0; i < MAX_TICKETS; i++) feeShown[i] = -1.0f;
+
     printf("\n============== 可退票的订单 ==============\n");
-    printf("  %-4s  %-20s  %-10s  %-5s  %-5s  %-8s  %6s\n",
-        "票号", "影片", "日期", "时段", "影厅", "座位", "票价");
+    printf("  %-4s  %-16s  %-11s  %-8s  %6s  %6s  %7s  %-6s\n",
+        "票号", "影片", "场次", "座位", "票价", "手续费", "实退", "说明");
 
-    for (i = 0; i < g_ticketCnt; i++)
+    for (pass = 0; pass < 2; pass++)          /* 0 = 能退的，1 = 不能退的 */
     {
-        if (g_tickets[i].userId != uid || g_tickets[i].state != 1) continue;
-        n++;
+        for (i = 0; i < g_ticketCnt; i++)
+        {
+            if (g_tickets[i].userId != uid) continue;
+            if (g_tickets[i].state != 1 && g_tickets[i].state != 4) continue;
 
-        if (g_tickets[i].hallId >= 1 && g_tickets[i].hallId <= HALL_COUNT)
-            sprintf(hall, "%d号厅", g_tickets[i].hallId);
-        else
-            strcpy(hall, "已下架");
+            sIdx    = findSchedule(g_tickets[i].schedId);
+            started = isStarted(sIdx);
+            if (pass == 0 && (g_tickets[i].state == 4 || started)) continue;
+            if (pass == 1 && g_tickets[i].state != 4 && !started) continue;
+            n++;
 
-        printf("  %4d  %-20s  %-10s  %-5s  %-5s  %2d排%2d座  %6.2f\n",
-            g_tickets[i].id, g_tickets[i].movieName, g_tickets[i].date,
-            slotTime(g_tickets[i].slot), hall,
-            g_tickets[i].row + 1, g_tickets[i].col + 1, g_tickets[i].price);
+            /* 日期只取后 5 位 MM-DD，和时段拼成一列，省 4 列宽 */
+            sprintf(when, "%s %s", g_tickets[i].date + 5,
+                slotTime(g_tickets[i].slot));
+            sprintf(seatBuf, "%d排%2d座", g_tickets[i].row + 1, g_tickets[i].col + 1);
+            strncpy(nameBuf, g_tickets[i].movieName, 16);   /* 8 个汉字 */
+            nameBuf[16] = '\0';
+
+            if (g_tickets[i].state == 4 || started)
+            {
+                /* 退不了的票也列出来，但要标明原因，不然用户以为程序丢了票 */
+                printf("  %4d  %-16s  %-11s  %-8s  %6.2f  %6s  %7s  %s%s%s\n",
+                    g_tickets[i].id, nameBuf, when, seatBuf, g_tickets[i].price,
+                    "--", "--",
+                    g_colorOn ? "\x1b[1;31m" : "",
+                    g_tickets[i].state == 4 ? "改签票" : "已开场", cEnd);
+            }
+            else
+            {
+                left = minutesToStart(sIdx);
+                fee  = calcFee(left, 0);
+                back = g_tickets[i].price - fee;
+                feeShown[i] = fee;
+                cFee = g_colorOn ? (fee <= 0.0f ? "\x1b[1;32m" : "\x1b[1;33m") : "";
+
+                printf("  %4d  %-16s  %-11s  %-8s  %6.2f  %6.2f  %7.2f  %s%s%s\n",
+                    g_tickets[i].id, nameBuf, when, seatBuf, g_tickets[i].price,
+                    fee, back, cFee, feeTag(left), cEnd);
+            }
+        }
     }
 
     if (n == 0)
@@ -173,23 +257,75 @@ int refundTicket(int uid)
         return 0;
     }
 
-    /* 按票号找下标：票号全局唯一，但还要确认是自己的、并且仍然有效 */
+    /* 按票号找下标：先只认"是不是自己的票"，状态单独判断，
+       这样才能区分"没这张票"和"这张票不能退" */
     for (i = 0; i < g_ticketCnt; i++)
     {
-        if (g_tickets[i].id == tid && g_tickets[i].userId == uid &&
-            g_tickets[i].state == 1) { real = i; break; }
+        if (g_tickets[i].id == tid && g_tickets[i].userId == uid)
+        { real = i; break; }
     }
     if (real < 0)
     {
-        printf("\n  没有 %d 号的可退订单，请照着上面的票号输入。\n", tid);
+        printf("\n  没有 %d 号的订单，请照着上面的票号输入。\n", tid);
         pauseScreen();
         return 0;
     }
 
     t = &g_tickets[real];
 
-    /* ③ 反查场次，把座位放回去，票房减掉 */
+    /* 改签票不能再退。这是"每笔订单限改签一次"的另一半：
+       否则可以先改签到很远的场次，再按免费档退掉，把阶梯绕过去 */
+    if (t->state == 4)
+    {
+        printf("\n  这是改签票，按规则不能退，只能去看。\n");
+        pauseScreen();
+        return 0;
+    }
+    if (t->state != 1)
+    {
+        printf("\n  这张票已经退过或改签过了，不能重复退。\n");
+        pauseScreen();
+        return 0;
+    }
+
+    /* ③ 已经开场的场次不给退 —— 电影都放完了还退，等于白看一场。
+          注意这里比的是"开场时间"不是"日期"：
+          今天 10:00 的场，晚上 20:00 来退，日期还是今天，必须挡住 */
     sIdx = findSchedule(t->schedId);
+    if (isStarted(sIdx))
+    {
+        printf("\n  这场已经开场了，票不能退。\n");
+        pauseScreen();
+        return 0;
+    }
+
+    /* ③-2 算手续费：越临近开演扣得越多，规则在 calcFee 里 */
+    left = minutesToStart(sIdx);
+    fee  = calcFee(left, 0);
+    back = t->price - fee;
+
+    /* 从"打印列表"到"按确认"之间可能刚好跨过档位（剩 6:00 时打开列表，
+       填票号花了两分钟）。数字变了就明说，别让人以为程序前后不一致。 */
+    if (feeShown[real] >= 0.0f && feeShown[real] != fee)
+        printf("\n  提示：已跨过档位，手续费由 %.2f 元变为 %.2f 元。\n",
+            feeShown[real], fee);
+
+    printf("\n  ================ 退票确认 ================\n");
+    printf("  《%s》  %s  %s  %d排%d座\n", t->movieName, t->date,
+        slotTime(t->slot), t->row + 1, t->col + 1);
+    printf("  距开演还有 %ld 小时 %ld 分\n", left / 60, left % 60);
+    printf("  票面 %.2f 元，手续费 %.2f 元（%s），实退 %.2f 元\n",
+        t->price, fee, feeTag(left), back);
+
+    printf("\n  确认退票？（1=确认，0=取消）：");
+    if (inputInt(0, 1) == 0)
+    {
+        printf("\n  已取消退票。\n");
+        pauseScreen();
+        return 0;
+    }
+
+    /* ④ 把座位放回去，票房减掉 */
     if (sIdx >= 0)
     {
         seatFree(sIdx, t->row, t->col);
@@ -205,7 +341,8 @@ int refundTicket(int uid)
     saveCinema();
     saveTickets();
 
-    printf("\n  退票成功：%d 号票已作废，退款 %.2f 元。\n", t->id, t->price);
+    printf("\n  退票成功：%d 号票已作废，手续费 %.2f 元，实退 %.2f 元。\n",
+        t->id, fee, back);
     pauseScreen();
     return 1;
 }
@@ -241,14 +378,15 @@ void showMyTickets(int uid)
             t->id, t->movieName, t->date, slotTime(t->slot), hall,
             t->row + 1, t->col + 1, t->price,
             t->state == 1 ? "有效"
-            : (t->state == 3 ? "已改签" : "已退"));
+            : (t->state == 4 ? "有效(改签票)"
+            : (t->state == 3 ? "已改签" : "已退")));
 
         if (t->buyTime[0] != '\0')
             printf("        购票时间：%s\n", t->buyTime);
         else
             printf("        购票时间：（旧订单，没有记录）\n");
 
-        if (t->state == 1)
+        if (t->state == 1 || t->state == 4)     /* 改签票也是有效票，能进场 */
         {
             valid++;
             paid += t->price;
@@ -283,7 +421,8 @@ int changeTicket(int uid)
 {
     int   n = 0, i, tid, real, oldIdx, newIdx;
     int   row, col, mIdx;
-    float oldPrice, newPrice, diff;
+    long  left;
+    float oldPrice, newPrice, diff, fee, pay;
     Ticket* t;
     Ticket  nt;
     const char* mname;
@@ -356,9 +495,9 @@ int changeTicket(int uid)
         pauseScreen();
         return 0;
     }
-    if (strcmp(g_scheds[oldIdx].date, g_today) < 0)
+    if (isStarted(oldIdx))
     {
-        printf("\n  原场次已经过期，不能改签。\n");
+        printf("\n  原场次已经开场了，不能改签。\n");
         pauseScreen();
         return 0;
     }
@@ -415,10 +554,14 @@ int changeTicket(int uid)
         return 0;
     }
 
-    /* ⑥ 算差价：改签不是免费换，贵的补、便宜的退 */
+    /* ⑥ 算差价 + 手续费：改签不是免费换，贵的补、便宜的退，
+          另外收一笔改签手续费（退票费的一半，按距开演的时间分档） */
+    left     = minutesToStart(oldIdx);
+    fee      = calcFee(left, 1);
     oldPrice = t->price;
     newPrice = g_scheds[newIdx].price;
     diff     = newPrice - oldPrice;
+    pay      = diff + fee;              /* >0 要付钱，<0 退钱 */
 
     printf("\n  ================ 改签确认 ================\n");
     printf("  原：%s  %-6s  %d排%d座  %6.2f 元\n",
@@ -427,12 +570,22 @@ int changeTicket(int uid)
         g_scheds[newIdx].date, slotTime(g_scheds[newIdx].slot),
         row + 1, col + 1, newPrice);
 
+    printf("  距原场次开演还有 %ld 小时 %ld 分\n", left / 60, left % 60);
+
     if (diff > 0.005f)
-        printf("  需要补差价 %.2f 元\n", diff);
+        printf("  补差价 %.2f 元\n", diff);
     else if (diff < -0.005f)
-        printf("  将退还差价 %.2f 元\n", -diff);
+        printf("  退差价 %.2f 元\n", -diff);
     else
         printf("  票价相同，不用补差价\n");
+    printf("  改签手续费 %.2f 元（退票费的一半）\n", fee);
+
+    if (pay > 0.005f)
+        printf("  合计需要支付 %.2f 元\n", pay);
+    else if (pay < -0.005f)
+        printf("  合计退还 %.2f 元\n", -pay);
+    else
+        printf("  合计不补不退\n");
 
     printf("\n  确认改签？（1=确认，0=取消）：");
     if (inputInt(0, 1) == 0)
@@ -483,7 +636,7 @@ int changeTicket(int uid)
     nt.price = newPrice;
     nt.hallId = g_scheds[newIdx].hallId;
     getNowTime(nt.buyTime);
-    nt.state = 1;
+    nt.state = 4;            /* 4 = 改签来的票：有效、能进场，但不能再退改 */
 
     g_tickets[g_ticketCnt] = nt;
     g_ticketCnt++;
@@ -492,10 +645,14 @@ int changeTicket(int uid)
     saveTickets();
 
     printf("\n  改签成功！新票号 %d。\n", nt.id);
-    if (diff > 0.005f)
-        printf("  请补差价 %.2f 元。\n", diff);
-    else if (diff < -0.005f)
-        printf("  已退还差价 %.2f 元。\n", -diff);
+    printf("  差价 %.2f 元，手续费 %.2f 元", diff, fee);
+    if (pay > 0.005f)
+        printf("，合计支付 %.2f 元。\n", pay);
+    else if (pay < -0.005f)
+        printf("，合计退还 %.2f 元。\n", -pay);
+    else
+        printf("，不用补退。\n");
+    printf("  注意：改签后的票不能再退，也不能再改签。\n");
 
     pauseScreen();
     return 1;

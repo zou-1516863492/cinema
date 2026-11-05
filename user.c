@@ -296,46 +296,47 @@ void userMenu(int uid, const char *name)
         printf("==============================================\n");
         printf("  观众：%s    今天 %s\n", name, g_today);
         printf("==============================================\n");
-        printf("   1. 浏览在售场次\n");
-        printf("   2. 查看座位图\n");
-        printf("   3. 购票\n");
-        printf("   4. 退票\n");
-        printf("   5. 我的购票记录\n");
-        printf("   6. 改签\n");
+        printf("   1. 场次与座位图\n");
+        printf("   2. 购票\n");
+        printf("   3. 退票\n");
+        printf("   4. 我的购票记录\n");
+        printf("   5. 改签\n");
         printf("   0. 返回主菜单\n");
         printf("----------------------------------------------\n");
-        printf("请选择 [0-6]：");
-        op = inputInt(0, 6);
+        printf("请选择 [0-5]：");
+        op = inputInt(0, 5);
 
         if (op == 0) return;
 
         switch (op)
         {
-        case 1:                                  /* A 写在 schedule.c */
-            showOnSale();
-            pauseScreen();
-            break;
-
-        case 2:                                  /* 先选场次，再看座位 */
-            sIdx = pickSchedule();               /* 取消返回 -1 */
+        case 1:                                  /* 看场次 + 看座位，合并成一步 */
+            sIdx = pickSchedule();               /* 自带在售列表；取消返回 -1 */
             if (sIdx >= 0)
+            {
                 showSeats(sIdx);
+                printf("\n  提示：记住排号和座号，回菜单选「购票」就能下单。\n");
+            }
+            else
+            {
+                printf("\n  已取消，回到菜单。\n");
+            }
             pauseScreen();
             break;
 
-        case 3:
+        case 2:
             buyTicket(uid);                      /* 写在 ticket.c */
             break;
 
-        case 4:
+        case 3:
             refundTicket(uid);                   /* 写在 ticket.c */
             break;
 
-        case 5:
+        case 4:
             showMyTickets(uid);                  /* 写在 ticket.c */
             break;
 
-        case 6:
+        case 5:
             changeTicket(uid);                   /* 写在 ticket.c */
             break;
         }

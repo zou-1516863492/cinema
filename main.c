@@ -9,6 +9,8 @@
     4) main    主菜单循环
 ==================================================================*/
 #include "cinema.h"
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>    /* SetConsoleMode：开启 ANSI 颜色 */
 #include <direct.h>     /* _mkdir */
 
 /*==================== 1. 全局数据实体 ====================*/
@@ -27,6 +29,9 @@ Ticket   g_tickets[MAX_TICKETS];
 int      g_ticketCnt = 0;
 
 char     g_today[11] = { 0 };
+
+int      g_colorOn = 0;
+int      g_cellW   = 2;          /* 默认 2；真实控制台会实测一下 */          /* 1=终端支持 ANSI 颜色，0=退回纯字符 */
 
 /*==================== 2. 数据层 ====================*/
 /* 读写规则（双方必须一致，改了要通知对方）：
@@ -402,6 +407,56 @@ const char* slotTime(int slot)
     }
 }
 
+/*------------------------------------------------------------------
+  距开演还有多少分钟
+  正数 = 还没开场    0 或负数 = 已经开场    -1 = 场次不存在 / 数据坏了
+  ------------------------------------------------------------------
+  退票、改签、收费分档都要问"还剩多久"，统一在这里算一次。
+  做法：把"日期 + 时段"拼成 struct tm，交给 mktime 转成 time_t，
+  再和现在相减 —— 跨月、跨年、闰年全由标准库处理，不用自己算。
+  tm_isdst 必须写 -1，让系统按当地规则判断夏令时，写死 0 会在
+  某些时区差一小时。
+------------------------------------------------------------------*/
+long minutesToStart(int sIdx)
+{
+    struct tm tmShow;
+    time_t    tShow, now;
+    int       y, mo, d, hh, mm;
+
+    if (sIdx < 0 || sIdx >= g_schedCnt) return -1;
+
+    if (sscanf(g_scheds[sIdx].date, "%d-%d-%d", &y, &mo, &d) != 3) return -1;
+    if (sscanf(slotTime(g_scheds[sIdx].slot), "%d:%d", &hh, &mm) != 2) return -1;
+
+    memset(&tmShow, 0, sizeof(tmShow));
+    tmShow.tm_year  = y - 1900;      /* tm 里年份从 1900 算起 */
+    tmShow.tm_mon   = mo - 1;        /* tm 里月份 0~11 */
+    tmShow.tm_mday  = d;
+    tmShow.tm_hour  = hh;
+    tmShow.tm_min   = mm;
+    tmShow.tm_isdst = -1;
+
+    tShow = mktime(&tmShow);
+    if (tShow == (time_t)-1) return -1;
+
+    now = time(NULL);
+    return (long)((tShow - now) / 60);
+}
+
+/*------------------------------------------------------------------
+  这场开演了吗？
+  返回 1 = 已经开场（含场次已不存在），0 = 还没开场
+  ------------------------------------------------------------------
+  退票、改签都要判"过了没有"。以前只比日期，今天 10:00 的场
+  到晚上 20:00 还能退，明显不对。现在一律走 minutesToStart，
+  时间口径只算一次，改规则不用动两个地方。
+------------------------------------------------------------------*/
+int isStarted(int sIdx)
+{
+    if (sIdx < 0 || sIdx >= g_schedCnt) return 1;
+    return minutesToStart(sIdx) <= 0;
+}
+
 const char* rowName(int row)
 {
     static const char* names[] = { "A", "B", "C", "D", "E",
@@ -469,12 +524,56 @@ void showMainMenu(void)
     printf("请选择 [0-3]：");
 }
 
+/* 探测控制台能不能显示 ANSI 颜色。
+   输出被重定向到文件时 GetConsoleMode 会失败，正好自动退回纯字符。 */
+void initConsoleColor(void)
+{
+    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD  mode;
+
+    g_colorOn = 0;
+    if (h == INVALID_HANDLE_VALUE || h == NULL) return;
+    if (!GetConsoleMode(h, &mode)) return;
+    if (!SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING)) return;
+    g_colorOn = 1;
+}
+
+/* 方块字符到底占 1 列还是 2 列？宋体是 2 列，Consolas 只有 1 列，
+   这就是当初座位图和数字对不上的根因。这里在光标位置打一个探针量一下，
+   量完立刻用空格擦掉，屏幕上看不到。 */
+static void measureCellWidth(void)
+{
+    CONSOLE_SCREEN_BUFFER_INFO bi;
+    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+    int    x0, w, i;
+
+    if (h == INVALID_HANDLE_VALUE || h == NULL) return;
+    if (!GetConsoleScreenBufferInfo(h, &bi)) return;
+
+    x0 = bi.dwCursorPosition.X;
+    printf("□");                 /* 探针：一个空位方块 */
+    fflush(stdout);
+
+    if (GetConsoleScreenBufferInfo(h, &bi))
+    {
+        w = bi.dwCursorPosition.X - x0;
+        if (w == 1 || w == 2) g_cellW = w;
+    }
+
+    printf("\r");                       /* 回到行首，用空格擦掉探针 */
+    for (i = 0; i < 8; i++) putchar(' ');
+    printf("\r");
+    fflush(stdout);
+}
+
 int main(void)
 {
     int  op;
     int  uid;
     char uname[20];
 
+    initConsoleColor();             /* 先探测颜色能力，所有界面共用 */
+    measureCellWidth();             /* 再量一个方块占几列，座位图靠它对齐 */
     dataInit();                     /* 建目录 + 取日期 + 三个文件读进内存 */
 
     while (1)

@@ -104,7 +104,15 @@ void inputPassword(char* buf, int size);
 void pauseScreen(void);
 void showMainMenu(void);
 
+/* 控制台：颜色能力与方块宽度，启动时探测一次（定义在 main.c） */
+extern int g_colorOn;         /* 1=终端支持 ANSI 颜色，0=退回纯字符 */
+extern int g_cellW;           /* 一个方块字符实测占几列：宋体 2，Consolas 1 */
+void initConsoleColor(void);  /* 探测颜色能力；不支持就返回，界面自动用纯字符 */
+
 const char* slotTime(int slot);
+int  isStarted(int sIdx);            /* 这场开演了吗？开场后不能退票、不能改签 */
+long minutesToStart(int sIdx);       /* 距开演还有多少分钟，负数=已开场 */
+float calcFee(long left, int isChange);  /* 退改手续费：0=退票 1=改签 */
 const char* rowName(int row);
 void addDays(char* out, int days);
 void getNowTime(char* out);          /* 取当前时刻 "YYYY-MM-DD HH:MM:SS" */
