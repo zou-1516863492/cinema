@@ -201,9 +201,9 @@ int registerUser(void)
 
     /* ④ 密码输两遍，防手抖 */
     printf("请设置密码（字母+数字+符号，不能含 $）：");
-    inputStr(pwd1, sizeof(pwd1));
+    inputPassword(pwd1, sizeof(pwd1));
     printf("请再输一次密码：");
-    inputStr(pwd2, sizeof(pwd2));
+    inputPassword(pwd2, sizeof(pwd2));
 
     if (strcmp(pwd1, pwd2) != 0)
     {
@@ -255,7 +255,7 @@ int loginUser(char *name, int *uid)
     printf("请输入用户名：");
     inputStr(uname, sizeof(uname));
     printf("请输入密码：");
-    inputStr(pwd, sizeof(pwd));
+    inputPassword(pwd, sizeof(pwd));
 
     for (i = 0; i < g_userCnt; i++)
     {
@@ -301,10 +301,11 @@ void userMenu(int uid, const char *name)
         printf("   3. 购票\n");
         printf("   4. 退票\n");
         printf("   5. 我的购票记录\n");
+        printf("   6. 改签\n");
         printf("   0. 返回主菜单\n");
         printf("----------------------------------------------\n");
-        printf("请选择 [0-5]：");
-        op = inputInt(0, 5);
+        printf("请选择 [0-6]：");
+        op = inputInt(0, 6);
 
         if (op == 0) return;
 
@@ -332,6 +333,10 @@ void userMenu(int uid, const char *name)
 
         case 5:
             showMyTickets(uid);                  /* 写在 ticket.c */
+            break;
+
+        case 6:
+            changeTicket(uid);                   /* 写在 ticket.c */
             break;
         }
 

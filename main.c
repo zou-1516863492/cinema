@@ -43,6 +43,20 @@ static void getToday(char* out)
     sprintf(out, "%04d-%02d-%02d", p->tm_year + 1900, p->tm_mon + 1, p->tm_mday);
 }
 
+/*------------------------------------------------------------------
+  取当前时刻，写成 "YYYY-MM-DD HH:MM:SS"（19 字符）
+  和 getToday 的区别：那个只要日期，排片用；这个要精确到秒，下单用
+  buf 至少要 20 字节
+------------------------------------------------------------------*/
+void getNowTime(char* out)
+{
+    time_t    t = time(NULL);
+    struct tm* p = localtime(&t);
+    sprintf(out, "%04d-%02d-%02d %02d:%02d:%02d",
+        p->tm_year + 1900, p->tm_mon + 1, p->tm_mday,
+        p->tm_hour, p->tm_min, p->tm_sec);
+}
+
 void loadUsers(void)
 {
     FILE* fp;
@@ -134,23 +148,91 @@ void saveCinema(void)
     fclose(fp);
 }
 
+typedef struct
+{
+    int   id;
+    int   userId;
+    int   schedId;
+    char  movieName[50];
+    char  date[11];
+    int   slot;
+    int   row;
+    int   col;
+    float price;
+    int   state;
+} TicketV1;                 /* 旧版订单：96 字节/条，没有影厅号和下单时间 */
+
 void loadTickets(void)
 {
-    FILE* fp;
+    FILE*    fp;
+    TicketV1 old;
+    int      n = 0, i, si;
+    long     fileSize;
+
     g_ticketCnt = 0;
     fp = fopen(FILE_TICKET, "rb");
     if (fp == NULL) return;
 
-    if (fread(&g_ticketCnt, sizeof(int), 1, fp) != 1) { g_ticketCnt = 0; fclose(fp); return; }
-    if (g_ticketCnt < 0 || g_ticketCnt > MAX_TICKETS)
+    if (fread(&n, sizeof(int), 1, fp) != 1) { fclose(fp); return; }
+    if (n < 0 || n > MAX_TICKETS)
     {
-        printf("警告：ticket.dat 条数异常(%d)，已重置。\n", g_ticketCnt);
-        g_ticketCnt = 0;
+        printf("警告：ticket.dat 条数异常(%d)，已重置。\n", n);
         fclose(fp);
         return;
     }
-    if (g_ticketCnt > 0)
-        fread(g_tickets, sizeof(Ticket), g_ticketCnt, fp);
+
+    /* 用文件实际大小判断是哪个版本：条数乘以单条长度，正好等于文件长度就对上了。
+       这样旧数据不用手工删，程序自己升级一次。 */
+    fseek(fp, 0, SEEK_END);
+    fileSize = ftell(fp);
+    fseek(fp, (long)sizeof(int), SEEK_SET);
+
+    if (fileSize == (long)sizeof(int) + (long)n * (long)sizeof(Ticket))
+    {
+        /* 新格式，直接读 */
+        if (n > 0)
+            g_ticketCnt = (int)fread(g_tickets, sizeof(Ticket), (size_t)n, fp);
+    }
+    else if (fileSize == (long)sizeof(int) + (long)n * (long)sizeof(TicketV1))
+    {
+        /* 旧格式：逐条搬进新结构。影厅号反查场次补上，下单时间留空 */
+        for (i = 0; i < n; i++)
+        {
+            if (fread(&old, sizeof(TicketV1), 1, fp) != 1) break;
+
+            memset(&g_tickets[i], 0, sizeof(Ticket));
+            g_tickets[i].id     = old.id;
+            g_tickets[i].userId = old.userId;
+            g_tickets[i].schedId = old.schedId;
+            strncpy(g_tickets[i].movieName, old.movieName, 49);
+            g_tickets[i].movieName[49] = '\0';
+            strncpy(g_tickets[i].date, old.date, 10);
+            g_tickets[i].date[10] = '\0';
+            g_tickets[i].slot   = old.slot;
+            g_tickets[i].row    = old.row;
+            g_tickets[i].col    = old.col;
+            g_tickets[i].price  = old.price;
+            g_tickets[i].state  = old.state;
+            g_tickets[i].buyTime[0] = '\0';      /* 旧票没有下单时间 */
+
+            si = findSchedule(old.schedId);
+            g_tickets[i].hallId = (si >= 0) ? g_scheds[si].hallId : 0;
+        }
+        g_ticketCnt = i;
+        fclose(fp);
+
+        printf("订单文件是旧格式，已升级：%d 条记录补上影厅号，下单时间留空。\n",
+            g_ticketCnt);
+        saveTickets();                    /* 立刻写成新格式，下次不用再迁 */
+        return;
+    }
+    else
+    {
+        printf("警告：ticket.dat 大小异常（%ld 字节，%d 条），已重置。\n",
+            fileSize, n);
+        g_ticketCnt = 0;
+    }
+
     fclose(fp);
 }
 
@@ -239,6 +321,67 @@ void inputStr(char* buf, int size)
         strcpy(buf, tmp);
         return;
     }
+}
+
+/*------------------------------------------------------------------
+  密码输入：字符不回显，每按一个键打一个 *
+  ─────────────────────────────────────────────────────────────
+  为什么不能再用 inputStr：
+    fgets 会把密码原样留在屏幕上，旁边的人一眼就看到了。
+    这里改用 _getch() 逐字符读键盘，读到什么自己决定显示什么。
+
+  支持的键：
+    - 普通字符：存进缓冲区，屏幕上显示 *
+    - 退格：从缓冲区删掉一个，屏幕上擦掉一个 *
+    - 回车：结束
+    - 方向键 / 功能键：一并吞掉（它们会返回两个字节，第二个不吞会变成乱码）
+
+  一个细节：
+    如果标准输入被重定向到文件（自动化测试就是这种情况），_getch() 读不到，
+    所以先用 _isatty 判断一下：不是控制台就退回 getchar，按行读。
+    人在键盘上敲的时候走 _getch，屏蔽回显；机器喂数据的时候走 getchar。
+------------------------------------------------------------------*/
+void inputPassword(char* buf, int size)
+{
+    int i = 0;
+    int ch;
+    int tty = _isatty(_fileno(stdin));      /* 非 0 表示 stdin 是控制台 */
+
+    while (1)
+    {
+        ch = tty ? _getch() : getchar();
+
+        if (ch == EOF)
+        {
+            break;
+        }
+        if (ch == '\r' || ch == '\n')       /* 回车：输入结束 */
+        {
+            break;
+        }
+        if (ch == 8 || ch == 127)           /* 退格：删掉最后一个字符 */
+        {
+            if (i > 0)
+            {
+                i--;
+                printf("\b \b");            /* 退一格、用空格盖掉、再退回来 */
+            }
+            continue;
+        }
+        if (ch == 0 || ch == 224)           /* 方向键、F 键：后面还跟一个扫描码 */
+        {
+            _getch();
+            continue;
+        }
+        if (i < size - 1)                   /* 到上限就不再收，屏幕上也不再出 * */
+        {
+            buf[i++] = (char)ch;
+            putchar('*');
+        }
+    }
+
+    buf[i] = '\0';
+    printf("\n");
 }
 
 void pauseScreen(void)

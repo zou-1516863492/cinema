@@ -8,6 +8,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include <conio.h>      /* _getch：密码输入时屏蔽回显 */
+#include <io.h>         /* _isatty / _fileno：判断输入是不是控制台 */
 
 /*==================== 一、常量 ====================*/
 #define HALL_COUNT     5
@@ -69,10 +71,12 @@ typedef struct
     char  movieName[50];
     char  date[11];
     int   slot;
+    int   hallId;           /* 影厅号快照：场次被清理了也照样显示 */
     int   row;
     int   col;
     float price;
-    int   state;            /* 1=有效 2=已退 */
+    char  buyTime[20];      /* 下单时间 "2026-11-05 08:20:14" */
+    int   state;            /* 1=有效 2=已退 3=已改签 */
 } Ticket;
 
 /*==================== 三、全局数据 ====================*/
@@ -96,12 +100,14 @@ void loadTickets(void);     void saveTickets(void);
 /*==================== 五、工具 ====================*/
 int  inputInt(int lo, int hi);
 void inputStr(char* buf, int size);
+void inputPassword(char* buf, int size);
 void pauseScreen(void);
 void showMainMenu(void);
 
 const char* slotTime(int slot);
 const char* rowName(int row);
 void addDays(char* out, int days);
+void getNowTime(char* out);          /* 取当前时刻 "YYYY-MM-DD HH:MM:SS" */
 
 int  newUserId(void);
 int  newMovieId(void);
@@ -141,5 +147,6 @@ int  seatFree(int sIdx, int row, int col);
 int  buyTicket(int uid);
 int  refundTicket(int uid);
 void showMyTickets(int uid);
+int  changeTicket(int uid);
 
 #endif

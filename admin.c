@@ -10,21 +10,18 @@ int adminLogin(void)
     system("cls");
     printf("============ 管理员登录 ============\n");
     printf("请输入管理员密码：");
-    inputStr(pwd, sizeof(pwd));
+    inputPassword(pwd, sizeof(pwd));
 
-    printf("\n【框架提示：管理员登录校验】\n");
     if (strcmp(pwd, ADMIN_PWD) == 0)
     {
-        printf("登录成功！");
+        printf("登录成功！\n");
+        pauseScreen();
         return 1;
     }
-    else
-        {
-        printf("密码错误！");
-        return 0;
-	}
+
+    printf("密码错误！\n");
     pauseScreen();
-    
+    return 0;
 }
 
 void adminMenu(void)
